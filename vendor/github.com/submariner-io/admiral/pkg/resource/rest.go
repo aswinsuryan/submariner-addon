@@ -23,7 +23,6 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"fmt"
-	"net/url"
 
 	"github.com/pkg/errors"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -33,7 +32,7 @@ import (
 	"k8s.io/client-go/rest"
 )
 
-func GetAuthorizedRestConfig(apiServer, apiServerToken, caData string, tls rest.TLSClientConfig,
+func GetAuthorizedRestConfig(apiServer, apiServerToken, caData string, tls *rest.TLSClientConfig,
 	gvr schema.GroupVersionResource, namespace string) (restConfig *rest.Config, authorized bool, err error) {
 	// First try a REST config without the CA trust chain
 	restConfig, err = BuildRestConfig(apiServer, apiServerToken, "", tls)
@@ -55,11 +54,15 @@ func GetAuthorizedRestConfig(apiServer, apiServerToken, caData string, tls rest.
 	return
 }
 
-func BuildRestConfig(apiServer, apiServerToken, caData string, tls rest.TLSClientConfig) (*rest.Config, error) {
+func BuildRestConfig(apiServer, apiServerToken, caData string, tls *rest.TLSClientConfig) (*rest.Config, error) {
+	if tls == nil {
+		tls = &rest.TLSClientConfig{}
+	}
+
 	if !tls.Insecure && caData != "" {
 		caDecoded, err := base64.StdEncoding.DecodeString(caData)
 		if err != nil {
-			return nil, fmt.Errorf("error decoding CA data: %v", err)
+			return nil, errors.Wrap(err, "error decoding CA data")
 		}
 
 		tls.CAData = caDecoded
@@ -67,7 +70,7 @@ func BuildRestConfig(apiServer, apiServerToken, caData string, tls rest.TLSClien
 
 	return &rest.Config{
 		Host:            fmt.Sprintf("https://%s", apiServer),
-		TLSClientConfig: tls,
+		TLSClientConfig: *tls,
 		BearerToken:     apiServerToken,
 	}, nil
 }
@@ -75,7 +78,7 @@ func BuildRestConfig(apiServer, apiServerToken, caData string, tls rest.TLSClien
 func IsAuthorizedFor(restConfig *rest.Config, gvr schema.GroupVersionResource, namespace string) (bool, error) {
 	client, err := dynamic.NewForConfig(restConfig)
 	if err != nil {
-		return false, err
+		return false, errors.Wrap(err, "error creating dynamic client")
 	}
 
 	_, err = client.Resource(gvr).Namespace(namespace).Get(context.TODO(), "any", metav1.GetOptions{})
@@ -91,11 +94,5 @@ func IsAuthorizedFor(restConfig *rest.Config, gvr schema.GroupVersionResource, n
 }
 
 func IsUnknownAuthorityError(err error) bool {
-	if urlError, ok := err.(*url.Error); ok {
-		if _, ok := urlError.Unwrap().(x509.UnknownAuthorityError); ok {
-			return true
-		}
-	}
-
-	return false
+	return errors.As(err, &x509.UnknownAuthorityError{})
 }
