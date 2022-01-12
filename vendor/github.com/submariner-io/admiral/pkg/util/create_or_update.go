@@ -84,7 +84,7 @@ func maybeCreateOrUpdate(ctx context.Context, client resource.Interface, obj run
 			}
 
 			if err != nil {
-				return errors.WithMessagef(err, "error creating %#v", obj)
+				return errors.Wrapf(err, "error creating %#v", obj)
 			}
 
 			result = OperationResultCreated
@@ -92,10 +92,10 @@ func maybeCreateOrUpdate(ctx context.Context, client resource.Interface, obj run
 		}
 
 		if err != nil {
-			return errors.WithMessagef(err, "error retrieving %q", objMeta.GetName())
+			return errors.Wrapf(err, "error retrieving %q", objMeta.GetName())
 		}
 
-		copy := existing.DeepCopyObject()
+		orig := existing.DeepCopyObject()
 		resourceVersion := resource.ToMeta(existing).GetResourceVersion()
 
 		toUpdate, err := mutate(existing)
@@ -105,7 +105,7 @@ func maybeCreateOrUpdate(ctx context.Context, client resource.Interface, obj run
 
 		resource.ToMeta(toUpdate).SetResourceVersion(resourceVersion)
 
-		if equality.Semantic.DeepEqual(toUpdate, copy) {
+		if equality.Semantic.DeepEqual(toUpdate, orig) {
 			return nil
 		}
 
@@ -114,11 +114,10 @@ func maybeCreateOrUpdate(ctx context.Context, client resource.Interface, obj run
 		result = OperationResultUpdated
 		_, err = client.Update(ctx, toUpdate, metav1.UpdateOptions{})
 
-		return err
+		return errors.Wrapf(err, "error updating %#v", toUpdate)
 	})
-
 	if err != nil {
-		return OperationResultNone, err
+		return OperationResultNone, errors.Wrap(err, "error creating or updating resource")
 	}
 
 	return result, nil
@@ -130,7 +129,8 @@ func maybeCreateOrUpdate(ctx context.Context, client resource.Interface, obj run
 // with foreground propagation, Get will continue to return the object being deleted
 // and Create will fail with “already exists” until deletion is complete.
 func CreateAnew(ctx context.Context, client resource.Interface, obj runtime.Object,
-	createOptions metav1.CreateOptions, deleteOptions metav1.DeleteOptions) (runtime.Object, error) {
+	createOptions metav1.CreateOptions,
+	deleteOptions metav1.DeleteOptions) (runtime.Object, error) { // nolint:gocritic // Match K8s API
 	name := resource.ToMeta(obj).GetName()
 
 	var created runtime.Object
@@ -140,7 +140,7 @@ func CreateAnew(ctx context.Context, client resource.Interface, obj runtime.Obje
 
 		created, err = client.Create(ctx, obj, createOptions)
 		if !apierrors.IsAlreadyExists(err) {
-			return true, err
+			return true, errors.Wrapf(err, "error creating %#v", obj)
 		}
 
 		err = client.Delete(ctx, name, deleteOptions)
@@ -148,10 +148,10 @@ func CreateAnew(ctx context.Context, client resource.Interface, obj runtime.Obje
 			err = nil
 		}
 
-		return false, errors.WithMessagef(err, "failed to delete pre-existing instance %q", name)
+		return false, errors.Wrapf(err, "failed to delete pre-existing instance %q", name)
 	})
 
-	return created, err
+	return created, errors.Wrap(err, "error creating resource anew")
 }
 
 func SetBackoff(b wait.Backoff) wait.Backoff {
